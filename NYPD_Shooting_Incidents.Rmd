@@ -1,0 +1,605 @@
+---
+title: "NYPD Shooting Incidents - Exploratory Analysis"
+date: "2023-04-25"
+output: html_document
+---
+
+```{r setup, include=FALSE, WARNING = FALSE, MESSAGE = FALSE}
+# Global settings, hight console output.
+knitr::opts_chunk$set(echo = TRUE, results = "hide")
+```
+
+### Objective - Do some exploratory analyses on the NYPD shooting data.
+
+Note the following about the data:
+
+-   Data records are NYC shootings occurring from 2006 - 2021.
+
+-   Data is for shootings across NYC's 5 boroughs: Brooklyn, Bronx, Manhattan, Queens, Staten Island.
+
+-   Data has date and time and latitude/longitude of shooting.
+
+-   Data has precinct/jurisdiction (not used below).
+
+-   Data has murder flag (not used below).
+
+-   Data has perpetrator/victim race/age/gender (not used below).
+
+### Load libraries to be used below.
+
+```{r set up the environment, MESSAGE = FALSE}
+
+# Assuming these packages are already installed using, for example, install.packages("tidyverse").
+
+library(tidyverse, warn.conflicts=F, quietly=T) 
+
+# Date manipulation
+library(lubridate, warn.conflicts=F, quietly=T)
+
+# Data viz stuff.
+library(plotly)
+library(sf)
+library(ggplot2)
+
+# Graph title has html.
+library(ggtext)
+
+# Map data for NYC counties.
+library(tigris)
+library(usmap)
+
+```
+
+### Load and wrangle the data into a data frame to be used below.
+
+The below user is the "NYPD Shooting Incident Data (Historic)" from <https://catalog.data.gov/dataset>. Page for the data is: <https://catalog.data.gov/dataset/nypd-shooting-incident-data-historic>.
+
+```{r set up URLs for loading data}
+
+urls_for_csvs <- str_c("https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD")
+
+```
+
+#### Go out and grab the data off the internet.
+
+```{r load data}
+
+nypd_data <- read_csv(urls_for_csvs[1])
+
+```
+
+#### Wrangle the data into `nypd_data_clean`.
+
+```{r clean up the data}
+
+nypd_data_clean <- nypd_data %>%
+  mutate(incident_date = mdy(OCCUR_DATE)) %>%
+  # Create a date-time object from the date and time strings. A date-time field,
+  # will allow processing data around dates and times.
+  unite("date_time_string", c(OCCUR_DATE, OCCUR_TIME), sep = " ", na.rm = FALSE, remove = FALSE) %>%
+  mutate(incident_datetime = as.POSIXct(date_time_string, format = "%m/%d/%Y %H:%M:%S"))
+
+nypd_data_clean <- nypd_data_clean %>%
+  mutate(incident_year = year(incident_datetime),
+         incident_year_fact = as.factor(year(incident_datetime)),
+         incident_month = month(incident_datetime),
+         incident_day = weekdays(incident_datetime),
+         incident_hour = hour(incident_datetime))
+
+# Add month as a factor, enabling control of month ordering by number (rather than alphabetical) for plots.
+nypd_data_clean <- nypd_data_clean %>%
+  mutate(month_factor = month(incident_month, label=TRUE, abbr=TRUE))
+
+```
+
+#### Set up data for mapping the shootings below.
+
+```{r setup data for NYC map}
+
+# nyc fips (not used below):
+# c("36061", "36081", "36085", "36047", "36005"))
+
+# download New York City county shapefiles from Census Bureau using tigris package
+nyc_counties <- counties(state = "NY", cb = TRUE, class = "sf") %>%
+  filter(NAME %in% c("Bronx", "Kings", "New York", "Queens", "Richmond"))
+
+# Link months to color. Use 3 character month abbreviations because those
+# come out of the "month_factor" data value by default.
+red_to_blue_palette <- c(
+  "Jan"="#363392", "Feb"="#5D327E", "Mar"="#83316A", "Apr"="#A92F55", "May"="#D02E41", "Jun"="#F62D2D",
+  "Jul"="#E32E37", "Aug"="#BD2F4B", "Sep"="#96305F", "Oct"="#703174", "Nov"="#4A3288", "Dec"="#1034A6"
+)
+
+```
+
+### Where are the shootings happening?
+
+-   Visualize where the shootings are occurring on maps of the five NYC boroughs.
+-   Color code by the month when shooting happened.
+    -   Use a color gradient across the seasons with summer months in red and winter months in blue.
+    -   Make the points transparent to help visualize what time of year most shootings are happening.
+
+Note that most shootings happen in reddish months (the summer). Also notice more shootings in 2020 (the year COVID started in NYC).
+
+*Follow-up investigations:*
+
+-   Add dimensions of time of day, location, perpetrator/victim demographics.
+-   Animate the shootings over time.
+
+**R code to map 2019 Shootings.**
+
+```{r plot the 2019 shootings on a map}
+
+nypd_data_clean_2019 <- nypd_data_clean %>%
+  filter(incident_year >= 2019 & incident_year <= 2019)
+my_sf_2019 <- st_as_sf(nypd_data_clean_2019, coords = c('Longitude', 'Latitude'))
+# coordinate reference system and "4326" is...?
+my_sf_2019 <- st_set_crs(my_sf_2019, 4326)
+
+
+# The below with some help from ChatGPT and
+# with some help from: https://cran.r-project.org/web/packages/usmap/vignettes/mapping.html
+
+
+# create a base map and then put the points over the map.
+nyc_map <- ggplot() +
+  geom_sf(data = nyc_counties, fill = "lightyellow", color = "black") +
+  
+  labs(title = "New York City Shooting Locations - 2019") +
+  
+  theme_bw() +
+  
+  # place borough labels on the map per long/lat.
+  geom_label(aes(label = "Brooklyn", x = -74.01, y = 40.555)) +
+  geom_label(aes(label = "Bronx", x = -73.79, y = 40.91)) +
+  geom_label(aes(label = "Manhanttan", x = -74.07, y = 40.8)) +
+  geom_label(aes(label = "Queens", x = -73.75, y = 40.57)) +
+  geom_label(aes(label = "Staten Island", x = -74.14, y = 40.665)) +
+  
+  # Add translucent (alpha) dots without much/any border (stroke) for each shooting.
+  # Color the dots by month of shooting from red-blue palette above.
+  geom_sf(data = my_sf_2019, aes(color = month_factor), alpha = 0.5, size = 2, stroke = 0) +
+  scale_color_manual(values = red_to_blue_palette, name = "Month") +
+  
+  theme(axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.title.y = element_blank())
+
+# render the map
+nyc_map
+
+```
+
+**R code to map 2020 Shootings.**
+
+```{r plot the 2020 shootings on a map}
+
+nypd_data_clean_2020 <- nypd_data_clean %>%
+  filter(incident_year >= 2020 & incident_year <= 2020)
+my_sf_2020 <- st_as_sf(nypd_data_clean_2020, coords = c('Longitude', 'Latitude'))
+my_sf_2020 <- st_set_crs(my_sf_2020, 4326)
+
+# create a base map and then put the points over the map.
+nyc_map_2020 <- ggplot() +
+  geom_sf(data = nyc_counties, fill = "lightyellow", color = "black") +
+  
+  labs(title = "New York City Shooting Locations - 2020") +
+  
+  theme_bw() +
+  
+  # place borough labels on the map.
+  geom_label(aes(label = "Brooklyn", x = -74.01, y = 40.555)) +
+  geom_label(aes(label = "Bronx", x = -73.79, y = 40.91)) +
+  geom_label(aes(label = "Manhanttan", x = -74.07, y = 40.8)) +
+  geom_label(aes(label = "Queens", x = -73.75, y = 40.57)) +
+  geom_label(aes(label = "Staten Island", x = -74.14, y = 40.665)) +
+  
+  geom_sf(data = my_sf_2020, aes(color = month_factor), alpha = 0.5, size = 2, stroke = 0) +
+  scale_color_manual(values = red_to_blue_palette, name = "Month") +
+  theme(axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.title.y = element_blank())
+
+# render the map
+nyc_map_2020
+
+```
+
+### When are the shootings happening?
+
+Use a polar plot to visualize the number of monthly NYC shootings year-over-year from 2018 to 2021.
+
+Note that shootings tend to be higher in the summer. Also, note the dramatic increase in shootings in the summer of 2020 (remembering that COVID started in March of 2020).
+
+*Follow-up investigations:*
+
+-   Do a similar polar plot for time of day.
+-   Do a similar polar plot for years.
+-   Do a similar polar plot of borough shooting counts over time.
+
+```{r polar plot of monthly shooting counts for some years}
+
+# Note: ChatGPT helped generate the original code which was then heavily modified.
+
+month_cnt <- nypd_data_clean %>%
+  filter(incident_year >= 2018 & incident_year <= 2021) %>%
+  group_by(incident_year, incident_month) %>% 
+  # .groups = "drop_last" prevents an annoying warning, but what exactly is it?
+  summarize(cnt =  n(), .groups = "drop_last")
+
+month_cnt <- arrange(month_cnt, incident_year, incident_month) %>%
+  select(cnt, incident_year, incident_month) %>%
+  # Make the months a factor. Without a factor, it seems impossible to get chart to be correct.
+  # This adds the month factors with what is effectively a cross-join and so this works because
+  # Each year of data covers all 12 months and the data is ordered by year and then month.
+  mutate(month_factor = factor(rep(month.name, 1), month.name))
+
+# from: https://cran.r-project.org/web/packages/geomtextpath/vignettes/curved_polar.html
+
+p <- ggplot(month_cnt, aes(month_factor, cnt)) +
+      geom_col(aes(fill = as.character(incident_year)), position = position_dodge(width = 1)) +
+      geom_vline(xintercept = 1:13 - 0.5, color = "gray90") +
+      geom_hline(yintercept = 0:3 * 100, color = "gray90") +
+      scale_fill_manual(values = c("#228833", "#CCBB44", "#66CCEE", "#AA3377"), name = "Year") +
+      ggtitle("<span style='font-size:16pt'>Year-over-Year Monthly </span><span style='font-size:16pt;color:#BB5566'>Shootings</span><span style='font-size:16pt'> in NYC</span>") +
+      theme_bw() +
+      theme(plot.title = element_markdown(),
+            #
+            axis.text.x = element_text(size = 10),
+            axis.title.x = element_blank(),
+            #
+            axis.text.y = element_text(size = 12, color = "#BB5566"),
+            axis.title.y = element_blank(),
+            #
+            legend.title=element_blank(),
+            legend.position = c(1.1, .5),
+            legend.text = element_text(size = 12, color = "#004488"),
+            #
+            panel.border = element_blank(),
+            panel.grid.major = element_blank())
+
+p + coord_polar()
+
+```
+
+### Is there anything interesting in the NYC shootings counts around the spring and fall weekends of the Daylight Savings Time (DST) change?
+
+DST time changes happen twice a year on a Saturday night at 2 AM:
+
+-   "Springing forward" in the spring (2 AM -\> 3 AM), loosing an hour that night.
+
+-   "Falling backward" in the fall (2 AM -\> 1 AM), gaining an hour that night.
+
+Plot the data in a stacked chart to help visualize the difference between the number of shootings on the DST weekend versus the average of the number of shootings on the weekends before and after DST weekend.
+
+Note that there seems to be an increase in shootings when an hour is gained (fall back) and a decrease in shootings when an hour is lost (spring forward).
+
+*Follow-up investigations:*
+
+-   What could be better numbers to compare? Simply count of weekend before? Average of two weekends before? Etc.
+
+-   Do a deeper analysis by looking at shootings by hour of the day and checking if DST counts match a double of the 2 AM hour count in the fall and a subtraction of the 2 AM hour count in the spring.
+
+-   Noting that most shootings happen and night (not shown here) and simply having/not-having an extra hour of time at night allows for more/less shootings, what does that mean?
+
+**R code setting up a data structure of DST dates.**
+
+```{r manage DST dates}
+
+# Create two arrays of Daylight Savings Time (DST) change dates from 2006 to 2022. 
+# One array for the spring dates and another for the fall dates.
+
+spring_dst <- 
+  c(ymd_hms("2022/03/13 00:00:00"),
+    ymd_hms("2021/03/14 00:00:00"),
+    ymd_hms("2020/03/08 00:00:00"),
+
+    ymd_hms("2019/03/10 00:00:00"),
+    ymd_hms("2018/03/11 00:00:00"),
+    ymd_hms("2017/03/12 00:00:00"),
+    ymd_hms("2016/03/13 00:00:00"),
+    ymd_hms("2015/03/08 00:00:00"),
+    
+    ymd_hms("2014/03/09 00:00:00"),
+    ymd_hms("2013/03/10 00:00:00"),
+    ymd_hms("2012/03/11 00:00:00"),
+    ymd_hms("2011/03/13 00:00:00"),
+    ymd_hms("2010/03/14 00:00:00"),
+
+    ymd_hms("2009/03/08 00:00:00"),
+    ymd_hms("2008/03/09 00:00:00"),
+    ymd_hms("2007/03/11 00:00:00"),
+    ymd_hms("2006/04/02 00:00:00"))
+
+fall_dst <- 
+  c(ymd_hms("2022/11/06 00:00:00"),
+    ymd_hms("2021/11/07 00:00:00"),
+    ymd_hms("2020/11/01 00:00:00"),
+
+    ymd_hms("2019/11/03 00:00:00"),
+    ymd_hms("2018/11/04 00:00:00"),
+    ymd_hms("2017/11/05 00:00:00"),
+    ymd_hms("2016/11/06 00:00:00"),
+    ymd_hms("2015/11/01 00:00:00"),
+    ymd_hms("2014/11/02 00:00:00"),
+    ymd_hms("2013/11/03 00:00:00"),
+    ymd_hms("2012/11/04 00:00:00"),
+    ymd_hms("2011/11/06 00:00:00"),
+    ymd_hms("2010/11/07 00:00:00"),
+
+    ymd_hms("2009/11/01 00:00:00"),
+    ymd_hms("2008/11/02 00:00:00"),
+    ymd_hms("2007/11/04 00:00:00"),
+    ymd_hms("2006/10/29 00:00:00"))
+
+```
+
+**R code to wrangle the data and then create a stacked chart.**
+
+```{r look at the data}
+
+# Wrangle the first year of data into the data frame and then
+# loop through each of the remaining years, merging into the data frame along
+# the way.
+spring_dst_cnts <- nypd_data_clean %>% 
+  # Filter down to the Sat and Sun of DST weekend and the weekend before and the 
+  # weekend after.
+  filter(
+    (incident_date >= (spring_dst[1] + days(-8)) & incident_date <= (spring_dst[1] + days(-7))) |
+    (incident_date >= (spring_dst[1]) & incident_date <= (spring_dst[1] + days(1))) |
+    (incident_date >= (spring_dst[1] + days(6)) & incident_date <= (spring_dst[1] + days(7)))) %>%
+  group_by(incident_date, incident_year) %>% 
+  summarize(cnt = n(), .groups = "drop_last") %>%
+  # Boolean to flag the DST weekend.
+  mutate(is_dst_weekend = ((incident_date == spring_dst[1]) | (incident_date == (spring_dst[1] + days(1)))))
+
+for (i in 2:17) {
+  spring_dst_next_cnt <- nypd_data_clean %>% 
+  filter(
+    (incident_date >= (spring_dst[i] + days(-8)) & incident_date <= (spring_dst[i] + days(-7))) |
+    (incident_date >= (spring_dst[i]) & incident_date <= (spring_dst[i] + days(1))) |
+    (incident_date >= (spring_dst[i] + days(6)) & incident_date <= (spring_dst[i] + days(7)))) %>%
+  group_by(incident_date, incident_year) %>% 
+  summarize(cnt = n(), .groups = "drop_last") %>%
+  mutate(is_dst_weekend = ((incident_date == spring_dst[i]) | (incident_date == (spring_dst[i] + days(-1)))))
+
+  spring_dst_cnts <- merge(spring_dst_cnts, spring_dst_next_cnt, all = TRUE)
+
+}
+
+# Sum shooting counts of DST weekend vs average of weekend before and after.
+year_spring_dst_cnts <- spring_dst_cnts %>%
+  group_by (incident_year) %>%
+  summarize(dst_wkend_cnt = sum(ifelse(is_dst_weekend, cnt, 0)), avg_surrounding_wkends_cnt = sum(ifelse(!is_dst_weekend, cnt, 0))/2, .groups = "drop_last")
+
+# Stacked chart for spring DST weekends (Sat and Sunday) compared to average
+# of weekend before and after.
+ggplot(year_spring_dst_cnts, aes(x = incident_year)) + 
+  geom_bar(aes(y = dst_wkend_cnt, fill = "DST weekend (Sat and Sun)"), stat = "identity") +
+  geom_bar(aes(y = -avg_surrounding_wkends_cnt, fill = "Avg of weekends before and after"), stat = "identity") +
+
+  # Adjust the axis labels and tick marks
+  scale_y_continuous(labels = abs, breaks = seq(-20, 20, 2), limits = c(-20, 20)) +
+  xlab("Spring (forward) DST Year") +
+  ylab("Shooting Count") +
+  ggtitle("<span style='font-size:12pt;text-align:center'>Daylight Savings Time (DST) Change Spring (lose an hour) versus Non-DST</span><br/><span style='font-size:12pt;text-align:center'>NYC Shooting Counts</span>") +
+  # Reverse the y-axis and adjust the legend
+  scale_fill_manual(values = c("#44BB99", "#BBCC33"), name = element_blank()) +
+  coord_flip() +
+  theme_bw() +
+  theme(plot.title = element_markdown())
+
+
+# Process fall the same as spring above.
+fall_dst_cnts <- nypd_data_clean %>% 
+  # 
+  filter(
+    (incident_date >= (fall_dst[1] + days(-6)) & incident_date <= (fall_dst[1] + days(-7))) |
+    (incident_date >= (fall_dst[1]) & incident_date <= (fall_dst[1] + days(1))) |
+    (incident_date >= (fall_dst[1] + days(7)) & incident_date <= (fall_dst[1] + days(8)))) %>%
+  group_by(incident_date, incident_year) %>% 
+  summarize(cnt = n(), .groups = "drop_last") %>%
+  mutate(is_dst_weekend = ((incident_date == (fall_dst[1] + days(-1))) | (incident_date == fall_dst[1])))
+
+for (i in 2:17) {
+  fall_dst_next_cnt <- nypd_data_clean %>% 
+  # 
+  filter(
+    (incident_date >= (fall_dst[i] + days(-6)) & incident_date <= (fall_dst[i] + days(-7))) |
+    (incident_date >= (fall_dst[i]) & incident_date <= (fall_dst[i] + days(1))) |
+    (incident_date >= (fall_dst[i] + days(7)) & incident_date <= (fall_dst[i] + days(8)))) %>%
+  group_by(incident_date, incident_year) %>% 
+  summarize(cnt = n(), .groups = "drop_last") %>%
+  mutate(is_dst_weekend = ((incident_date == (fall_dst[i] + days(1))) | (incident_date == fall_dst[i])))
+
+  fall_dst_cnts <- merge(fall_dst_cnts, fall_dst_next_cnt, all = TRUE)
+
+}
+
+year_fall_dst_cnts <- fall_dst_cnts %>%
+  group_by (incident_year) %>%
+  summarize(dst_wkend_cnt = sum(ifelse(is_dst_weekend, cnt, 0)), avg_surrounding_wkends_cnt = sum(ifelse(!is_dst_weekend, cnt, 0))/2, .groups = "drop_last")
+
+# Create graph same as spring above.
+ggplot(year_fall_dst_cnts, aes(x = incident_year)) + 
+  geom_bar(aes(y = dst_wkend_cnt, fill = "DST weekend (Sat and Sun)"), stat = "identity") +
+  geom_bar(aes(y = -avg_surrounding_wkends_cnt, fill = "Avg of weekends before and after"), stat = "identity") +
+
+  # Adjust the axis labels and tick marks
+  scale_y_continuous(labels = abs, breaks = seq(-20, 20, 2), limits = c(-20, 20)) +
+  xlab("Fall (back) DST Year") +
+  ylab("Shooting Count") +
+  ggtitle("<span style='font-size:12pt;text-align:center'>Daylight Savings Time (DST) Change  Fall (gain an hour) versus Non-DST</span><br/><span style='font-size:12pt;text-align:center'>NYC Shooting Counts</span>") + 
+  # Reverse the y-axis and adjust the legend
+  scale_fill_manual(values = c("#eedd88", "#ee8866"), name = element_blank()) +
+  coord_flip() +
+  theme_bw() +
+  theme(plot.title = element_markdown())
+
+```
+
+### Are shootings in the different boroughs correlated?
+
+Create a linear model, looking at the cumulative sum of four of the boroughs with respect to the cumulative sum of the fifth one, Brooklyn (randomly chosen).
+
+Note that the cumulative correlation model obscures the variation of shooting counts on specific dates by lumping the shootings into a accumulation count.
+
+*Follow-up investigations:*
+
+-   What dynamics could possibly cause shootings to be correlated across different regions in NYC?
+-   Are there direct links between more/less shootings across the boroughs? Or is it all just probabilities driven by citywide/nationwide/global factors?
+-   Deviation from the predicted values are visible on the graphs. Do a finer analysis to explore when exactly the shooting correlation across boroughs breaks down.
+
+```{r model of cumulative shootings across boroughs}
+
+boro_month_cnt <- nypd_data_clean %>%
+  filter(incident_year >= 2019 & incident_year <= 2020) %>%
+  group_by(incident_year, incident_year_fact, incident_month, BORO) %>% 
+  summarize(cnt =  n()) %>%
+  select(BORO, incident_year, incident_year_fact, incident_month, cnt)
+
+arrange(boro_month_cnt, BORO, incident_year, incident_month)
+
+# Create cumulative sum column.
+boro_month_cnt <- boro_month_cnt %>%
+  group_by(BORO) %>% 
+  mutate(csum = cumsum(cnt))
+
+# Create a data frame for each borough and then join them one-by-one 
+# to get data into a single data frame with each year/month record containing
+# the data for all 5 boroughs. Rename the columns along the way.
+
+brooklyn <- boro_month_cnt %>%
+  filter(BORO == "BROOKLYN")
+names(brooklyn)[names(brooklyn) == 'BORO'] <- 'BORO.brooklyn'
+names(brooklyn)[names(brooklyn) == 'cnt'] <- 'cnt.brooklyn'
+names(brooklyn)[names(brooklyn) == 'csum'] <- 'csum.brooklyn'
+
+bronx <- boro_month_cnt %>%
+  filter(BORO == "BRONX")
+names(bronx)[names(bronx) == 'BORO'] <- 'BORO.bronx'
+names(bronx)[names(bronx) == 'cnt'] <- 'cnt.bronx'
+names(bronx)[names(bronx) == 'csum'] <- 'csum.bronx'
+
+manhattan <- boro_month_cnt %>%
+  filter(BORO == "MANHATTAN")
+names(manhattan)[names(manhattan) == 'BORO'] <- 'BORO.manhattan'
+names(manhattan)[names(manhattan) == 'cnt'] <- 'cnt.manhattan'
+names(manhattan)[names(manhattan) == 'csum'] <- 'csum.manhattan'
+
+queens <- boro_month_cnt %>%
+  filter(BORO == "QUEENS")
+names(queens)[names(queens) == 'BORO'] <- 'BORO.queens'
+names(queens)[names(queens) == 'cnt'] <- 'cnt.queens'
+names(queens)[names(queens) == 'csum'] <- 'csum.queens'
+
+staten_island <- boro_month_cnt %>%
+  filter(BORO == "STATEN ISLAND")
+names(staten_island)[names(staten_island) == 'BORO'] <- 'BORO.staten_island'
+names(staten_island)[names(staten_island) == 'cnt'] <- 'cnt.staten_island'
+names(staten_island)[names(staten_island) == 'csum'] <- 'csum.staten_island'
+
+by_yr_mth <- join_by(incident_year, incident_month) 
+
+boro_csums <- left_join(brooklyn, bronx, by_yr_mth)
+boro_csums <- left_join(boro_csums, manhattan, by_yr_mth)
+boro_csums <- left_join(boro_csums, queens, by_yr_mth)
+boro_csums <- left_join(boro_csums, staten_island, by_yr_mth)
+
+# Update one record for Staten Island, February 2019. Note this is very specific
+# to this analysis and these dates and will break if dates/boroughs are changed.
+row_index <- which(boro_csums$incident_year == 2019 & boro_csums$incident_month == 2)[1]
+boro_csums[row_index, 19] <- "STATEN ISLAND" # BORO.staten_island
+boro_csums[row_index, 20] <- as.factor(year(ymd_hms("2019/01/01 00:00:00"))) # incident_year_fact
+boro_csums[row_index, 21] <- 0 # cnt.staten_island
+boro_csums[row_index, 22] <- 2 # csum.staten_island
+
+# Create linear models and add the predicted values to the data frame.
+model_bronx <- lm(csum.bronx ~ csum.brooklyn, data = boro_csums)
+model_manhattan <- lm(csum.manhattan ~ csum.brooklyn, data = boro_csums)
+model_queens <- lm(csum.queens ~ csum.brooklyn, data = boro_csums)
+model_staten_island <- lm(csum.staten_island ~ csum.brooklyn, data = boro_csums)
+
+pred_bronx = predict(model_bronx, data.frame(csum.brooklyn = boro_csums$csum.brooklyn))
+pred_manhattan = predict(model_manhattan, data.frame(csum.brooklyn = boro_csums$csum.brooklyn))
+pred_queens = predict(model_queens, data.frame(csum.brooklyn = boro_csums$csum.brooklyn))
+pred_staten_island = predict(model_staten_island, data.frame(csum.brooklyn = boro_csums$csum.brooklyn))
+
+boro_csums <- boro_csums %>%
+  mutate(pred_bronx = pred_bronx,
+         pred_manhattan = pred_manhattan,
+         pred_queens = pred_queens,
+         pred_staten_island = pred_staten_island)
+
+
+
+boro_csums %>%
+  ggplot() +
+
+  ggtitle("<span style='font-size:14pt'>Cumulative Shootings in<br/>Bronx, Manhattan, Queens, Staten Island<br/>as a Function of Shootings in Brooklyn</span>") +
+  
+  xlab("Actual/Predicted Cumulative Shootings") +
+  ylab("Actual Cumulative Shootings in Brooklyn") +
+  
+  geom_point(aes(x = csum.brooklyn, y = csum.brooklyn), color = "black") + 
+  geom_label(aes(label = "Brooklyn", x = 425, y = 625)) +
+  
+  geom_point(aes(x = csum.brooklyn, y = csum.bronx), color = "#FFC20A") + 
+  geom_line(aes(x = csum.brooklyn, y = pred_bronx), lwd = 0.75, color = "#0C7BDC") +
+  geom_label(aes(label = "Bronx", x = 1000, y = 775)) +
+  
+  geom_point(aes(x = csum.brooklyn, y = csum.manhattan), color = "#1AFF1A") + 
+  geom_line(aes(x = csum.brooklyn, y = pred_manhattan), lwd = 0.75, color = "#4B0092") +
+  geom_label(aes(label = "Manhattan", x = 870, y = 210)) +
+
+  geom_point(aes(x = csum.brooklyn, y = csum.queens), color = "#E1BE6A") + 
+  geom_line(aes(x = csum.brooklyn, y = pred_queens), lwd = 0.75, color = "#40B0A6") +
+  geom_label(aes(label = "Queens", x = 1100, y = 520)) +
+
+  geom_point(aes(x = csum.brooklyn, y = csum.staten_island), color = "#1A85FF") + 
+  geom_line(aes(x = csum.brooklyn, y = pred_staten_island), lwd = 0.75, color = "#D41159") +
+  geom_label(aes(label = "Staten Island", x = 1050, y = 0)) +
+  
+  # Make scales the same size to emphasize Brooklyn on the diagonal.
+  coord_fixed() +
+
+  theme_bw() +
+  theme(plot.title = element_markdown(),
+        axis.text.x = element_text(size = 10),
+        axis.text.y = element_text(size = 10))
+
+```
+
+### Potential sources of bias in both this data set and the below analyses.
+
+This data set is fraught with bias starting with its very existence. The data set's availability, separate from all context from which it came, invites an analysis and then accompanying simplified "stories" about the reality underlying the shootings data.
+
+At another level, simplifying, perpetrator and victim demographics into buckets for race/age/gender and then the location in a bucket of types of locations, removes even more context.
+
+Other contextual biases manifest in, for example, shootings of Columbia students making national news while scores of people are shot in the same area every year.
+
+At the data value level, potentials sources of bias are:
+
+-   Carelessness/bias in determination of race/age/gender.
+
+-   Missing data (locations and perpetrator information).
+
+-   Missing data location (given that victim information is 100%, why are there missing locations?).
+
+-   How is time recorded? Is there a tendency to round time per bias of recorder?
+
+-   How precisely is location recorded? Are their protocols or is it up to the individual recorder?
+
+I, the author of this analysis, am a self identified white guy from Texas, far away from NYC, with very little sense of the real life context of the shootings. I have somewhat mitigated the impact of my bias by choosing to explore/analyze time and location data (areas that are dryer and maybe not interesting to many people).
+
+However, I recognize my bias in the areas analyzed:
+
+-   Mapping of shooting locations - I was expecting to see more shootings in poorer areas of NYC. I am curious about how to expand an analysis to potentially debunk this expectation.
+
+-   Number of shooting by month for 2019 and 2020 - I was expecting shootings to go down when COVID hit, they went up.
+
+-   Daily Savings Time (DST) - I am personally irritated by reporting on the impact of DST on deaths, etc. and wanted to find evidence to disprove any such impact. Honestly, on this one, I am more interested in proving myself right.
+
+-   Correlation of shootings across boroughs - I was expecting a correlation but would really like to extend this analysis to drill into whether the correlation breaks down.
